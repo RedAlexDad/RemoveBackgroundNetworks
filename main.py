@@ -14,8 +14,9 @@ import torchvision
 import torchvision.transforms as transforms
 
 
-class VOCDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
+class RemoveBackgroundNetworks(Dataset):
+    def __init__(self, root_dir, transform=None, device='cpu'):
+        self.device = device
         self.root_dir = root_dir
         self.transform = transform
 
@@ -29,8 +30,16 @@ class VOCDataset(Dataset):
         # Создаем список пар изображений и их масок
         self.dataset = self.find_valid_files()
 
-    def __len__(self):
-        return len(self.image_list)
+        # Резульаты обучения
+        self.train_losses = []
+        self.test_losses = []
+
+    def set_device(self, device='cpu'):
+        print(f'Есть ли CUDA? : {torch.cuda.is_available()}')
+        if device == 'cpu':
+            self.device = 'cpu'
+        else:
+            self.device = 'cuda'
 
     def __getitem__(self, idx):
         img_name, mask_name = self.dataset[idx]
@@ -49,6 +58,9 @@ class VOCDataset(Dataset):
             image = self.transform(image)
             mask = self.transform(mask)
 
+        # Преобразование one-hot маски в тензор с индексами классов
+        mask = torch.argmax(mask, dim=1)
+
         return [image, mask]  # Возвращаем тензоры image и mask
 
     def find_valid_files(self):
@@ -65,9 +77,9 @@ class VOCDataset(Dataset):
                     count_exist += 1
                 else:
                     count_no_exist += 1
-        print(f'Количество отсутствующих файлов {count_no_exist}')
-        print(f'Количество присутствующих файлов {count_exist}')
-        print(f'Процент от всего: {count_exist / (count_exist + count_no_exist) * 100}%')
+        # print(f'Количество отсутствующих файлов {count_no_exist}')
+        # print(f'Количество присутствующих файлов {count_exist}')
+        # print(f'Процент от всего: {count_exist / (count_exist + count_no_exist) * 100}%')
         return dataset
 
     def load_annotations(self):
@@ -116,64 +128,96 @@ class VOCDataset(Dataset):
     def get_test_loader(self, test_dataset, batch_size=8, shuffle=False):
         return DataLoader(test_dataset, batch_size=batch_size, shuffle=shuffle)
 
+    def train_model(self, model, criterion, optimizer, train_loader, num_epochs=10):
+        model.train()
+        for epoch in range(num_epochs):
+            epoch_loss = 0.0
+            for batch in tqdm(train_loader, desc=f'Epoch {epoch + 1}/{num_epochs}'):
+                # Извлекаем изображения и маски из батча
+                images, masks = batch
+
+                # Преобразование списка путей к файлам в список тензоров
+                images = [transform(Image.open(img_name).convert('RGB')).to(self.device) for img_name in images]
+                masks = [transform(Image.open(mask_name)).to(self.device) for mask_name in masks]
+
+                images = torch.stack(images)
+                masks = torch.stack(masks)
+                # Это изменение преобразует ваши 4-мерные one-hot маски в 3-мерные тензоры, где каждое значение представляет собой индекс класса.
+                masks = torch.argmax(masks, dim=1)
+
+                optimizer.zero_grad()
+                outputs = model(images)['out']
+                loss = criterion(outputs, masks)
+                loss.backward()
+                optimizer.step()
+
+                epoch_loss += loss.item()
+                # print(f'Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item()}')
+
+            # Сохранение значения функции потерь на каждой эпохе
+            self.train_losses.append(epoch_loss / len(train_loader))
+            print(f'\nEpoch {epoch + 1}/{num_epochs}, Loss: {self.train_losses[-1]}')
+
+        # Сохранение модели
+        torch.save(model.state_dict(), 'trained_model.pth')
+    def evaluate_model(self, model, criterion, test_loader):
+        model.eval()
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc='Testing'):
+                # Извлекаем изображения и маски из батча
+                images, masks = batch
+
+                # Преобразование списка путей к файлам в список тензоров
+                images = torch.stack([transform(Image.open(img_name).convert('RGB')).to(self.device) for img_name in images])
+                masks = torch.stack([transform(Image.open(mask_name)).to(self.device) for mask_name in masks])
+
+                # Это изменение преобразует ваши 4-мерные one-hot маски в 3-мерные тензоры, где каждое значение представляет собой индекс класса.
+                masks = torch.argmax(masks, dim=1)
+                outputs = model(images)['out']
+                loss = criterion(outputs, masks)
+                self.test_losses.append(loss.item())
+                # print(f'Test Loss: {loss.item()}')
+
+    def print_losses(self):
+        print("Train Losses:")
+        for epoch, loss in enumerate(self.train_losses):
+            print(f"Epoch {epoch + 1}: {loss}")
+
+        print("\nTest Losses:")
+        for epoch, loss in enumerate(self.test_losses):
+            print(f"Epoch {epoch + 1}: {loss}")
 
 if __name__ == "__main__":
+    form_image = (128, 128)
+
     # Пример преобразования данных для нейронной сети
     transform = transforms.Compose([
-        transforms.Resize((256, 256)),
+        transforms.Resize(form_image),
         transforms.ToTensor()
     ])
 
     # Создание экземпляра класса датасета
-    dataset = VOCDataset(root_dir='./VOCdevkit/VOC2012', transform=transform)
+    RBN = RemoveBackgroundNetworks(root_dir='./VOCdevkit/VOC2012', transform=transform)
+    # Ставим CUDA
+    RBN.set_device(device='cpu')
 
     # Разделение датасета на обучающую и тестовую выборки
-    train_dataset, test_dataset = dataset.split_dataset(train_test_split=0.8)
+    train_dataset, test_dataset = RBN.split_dataset(train_test_split=0.8)
 
     # Создание DataLoader для обучающей и тестовой выборок
-    train_loader = dataset.get_train_loader(train_dataset, batch_size=8, shuffle=True)
-    test_loader = dataset.get_test_loader(test_dataset, batch_size=8, shuffle=False)
+    train_loader = RBN.get_train_loader(train_dataset, batch_size=8, shuffle=True)
+    test_loader = RBN.get_test_loader(test_dataset, batch_size=8, shuffle=False)
 
     # Загрузка предварительно обученной модели DeepLabv3
     model = torchvision.models.segmentation.deeplabv3_resnet101(pretrained=True)
+    model.to(RBN.device)
 
     # Определение функции потерь и оптимизатора
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    # Обучение модели
-    model.train()
-    for epoch in range(10):
-        for batch in tqdm(train_loader, desc=f'Epoch {epoch + 1}/10'):
-            images, masks = batch  # Извлекаем изображения и маски из батча
+    RBN.train_model(model=model, criterion=criterion, optimizer=optimizer, train_loader=train_loader, num_epochs=10)
+    RBN.evaluate_model(model=model, criterion=criterion, test_loader=test_loader)
 
-            # Преобразование списка путей к файлам в список тензоров
-            images = [transform(Image.open(img_name).convert('RGB')) for img_name in images]
-            masks = [transform(Image.open(mask_name)) for mask_name in masks]
-
-            # Объединение изображений и масок по оси пакета
-            images = torch.stack(images)
-            masks = torch.stack(masks)
-            # Это изменение преобразует ваши 4-мерные one-hot маски в 3-мерные тензоры, где каждое значение представляет собой индекс класса.
-            masks = torch.argmax(masks, dim=1)
-
-            optimizer.zero_grad()
-            outputs = model(images)['out']
-            loss = criterion(outputs, masks)
-            loss.backward()
-            optimizer.step()
-            # print(f'Epoch {epoch + 1}/10, Loss: {loss.item()}')
-
-    # Тестирование модели
-    model.eval()
-    with torch.no_grad():
-        for batch in tqdm(test_loader, desc='Testing'):
-            images, masks = batch  # Извлекаем изображения и маски из батча
-
-            # Преобразование изображений и масок в тензоры
-            images = torch.stack(images)
-            masks = torch.stack(masks)
-
-            outputs = model(images)['out']
-            loss = criterion(outputs, masks)
-            print(f'Test Loss: {loss.item()}')
+    # Вывод результатов
+    RBN.print_losses()
