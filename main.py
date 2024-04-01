@@ -1,12 +1,12 @@
 import os
 
+import numpy as np
 from PIL import Image
 from tqdm import tqdm
 import xml.etree.ElementTree as ET
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
@@ -160,6 +160,7 @@ class RemoveBackgroundNetworks(Dataset):
 
         # Сохранение модели
         torch.save(model.state_dict(), 'trained_model.pth')
+
     def evaluate_model(self, model, criterion, test_loader):
         model.eval()
         with torch.no_grad():
@@ -168,7 +169,8 @@ class RemoveBackgroundNetworks(Dataset):
                 images, masks = batch
 
                 # Преобразование списка путей к файлам в список тензоров
-                images = torch.stack([transform(Image.open(img_name).convert('RGB')).to(self.device) for img_name in images])
+                images = torch.stack(
+                    [transform(Image.open(img_name).convert('RGB')).to(self.device) for img_name in images])
                 masks = torch.stack([transform(Image.open(mask_name)).to(self.device) for mask_name in masks])
 
                 # Это изменение преобразует ваши 4-мерные one-hot маски в 3-мерные тензоры, где каждое значение представляет собой индекс класса.
@@ -178,17 +180,58 @@ class RemoveBackgroundNetworks(Dataset):
                 self.test_losses.append(loss.item())
                 # print(f'Test Loss: {loss.item()}')
 
-    def print_losses(self):
-        print("Train Losses:")
-        for epoch, loss in enumerate(self.train_losses):
-            print(f"Epoch {epoch + 1}: {loss}")
+    def set_model(self, model_path=None):
+        model = torchvision.models.segmentation.deeplabv3_resnet101(pretrained=False)
+        state_dict = torch.load(model_path)
 
-        print("\nTest Losses:")
-        for epoch, loss in enumerate(self.test_losses):
-            print(f"Epoch {epoch + 1}: {loss}")
+        # Удаление ненужных ключей из state_dict
+        keys_to_remove = [key for key in state_dict.keys() if 'aux_classifier' in key]
+        for key in keys_to_remove:
+            del state_dict[key]
+
+        # Загрузка оставшихся ключей
+        model.load_state_dict(state_dict)
+
+        return model
+
+    def print_losses(self):
+        if len(self.train_losses) != 0:
+            print("Train Losses:")
+            for epoch, loss in enumerate(self.train_losses):
+                print(f"Epoch {epoch + 1}: {loss}")
+
+        if len(self.test_losses) != 0:
+            print("\nTest Losses:")
+            for epoch, loss in enumerate(self.test_losses):
+                print(f"Epoch {epoch + 1}: {loss}")
+
+    def remove_background(self, image, mask):
+        # Получение размеров изображения
+        image_size = (image.shape[2], image.shape[1])  # Размеры (ширина, высота)
+
+        # Преобразование тензора маски в изображение PIL
+        mask_image = transforms.ToPILImage()(mask.byte())
+
+        # Преобразование маски в одноканальное изображение
+        mask_image = mask_image.convert('L')
+
+        # Приведение размеров маски к размерам изображения
+        mask_image = mask_image.resize(image_size)
+
+        # Преобразование тензора изображения в изображение PIL
+        image_pil = transforms.ToPILImage()(image.cpu().byte())
+
+        # Применение маски к изображению
+        color_background = (255, 255, 255)
+        image_with_mask = Image.composite(image_pil, Image.new('RGB', image_size, color_background), mask_image)
+
+        return image_with_mask
+
 
 if __name__ == "__main__":
-    form_image = (128, 128)
+    # form_image = (128, 128)
+    # form_image = (256, 256)
+    form_image = (512, 512)
 
     # Пример преобразования данных для нейронной сети
     transform = transforms.Compose([
@@ -216,8 +259,30 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    RBN.train_model(model=model, criterion=criterion, optimizer=optimizer, train_loader=train_loader, num_epochs=10)
-    RBN.evaluate_model(model=model, criterion=criterion, test_loader=test_loader)
+    if (os.path.exists('trained_model.pth')):
+        model = RBN.set_model(model_path='trained_model.pth')  # Загрузка модели
+        model.to(RBN.device)
 
-    # Вывод результатов
-    RBN.print_losses()
+        # RBN.evaluate_model(model=model, criterion=criterion, test_loader=test_loader)
+
+        # Вывод результатов
+        # RBN.print_losses()
+    else:
+        RBN.train_model(model=model, criterion=criterion, optimizer=optimizer, train_loader=train_loader, num_epochs=10)
+        RBN.evaluate_model(model=model, criterion=criterion, test_loader=test_loader)
+
+        # Вывод результатов
+        RBN.print_losses()
+
+    # Выключаем модель для предсказания
+    # model.eval()
+    # Использование метода для удаления фона из изображения
+    # image_path = './VOCdevkit/VOC2012/JPEGImages/2008_001134.jpg'  # Путь к изображению
+    # removed_background_image = RBN.remove_background(model=model, image_path=image_path)
+    for i in range(10):
+        image, mask = RBN[i]  # Получаем изображение и маску из вашего датасета
+        result_image = RBN.remove_background(image, mask)
+        result_image.show()  # Показываем результат
+
+    # Вывод изображения с удаленным фоном
+    # removed_background_image.show()

@@ -7,3 +7,4 @@ annotations_trainval2017.zip
 VOCdevkit
 VOCtrainval_11-May-2012.tar
 train2017.zip
+trained_model.pth
