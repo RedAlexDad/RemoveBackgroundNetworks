@@ -182,10 +182,10 @@ class RemoveBackgroundNetworks(Dataset):
 
     def set_model(self, model_path=None):
         model = torchvision.models.segmentation.deeplabv3_resnet101(pretrained=False)
-        state_dict = torch.load(model_path)
+        state_dict = torch.load(model_path, map_location=torch.device(self.device))
 
         # Удаление ненужных ключей из state_dict
-        keys_to_remove = [key for key in state_dict.keys() if 'aux_classifier' in key]
+        keys_ to_remove = [key for key in state_dict.keys() if 'aux_classifier' in key]
         for key in keys_to_remove:
             del state_dict[key]
 
@@ -259,14 +259,18 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    if (os.path.exists('trained_model.pth')):
-        model = RBN.set_model(model_path='trained_model.pth')  # Загрузка модели
+    # Загрузка модели
+    model_path = 'stage1_sad_54.4.pth'
+
+    if (os.path.exists(model_path)):
+        print('Есть модель:', model_path)
+        model = RBN.set_model(model_path=model_path)  # Загрузка модели
         model.to(RBN.device)
 
-        # RBN.evaluate_model(model=model, criterion=criterion, test_loader=test_loader)
+        RBN.evaluate_model(model=model, criterion=criterion, test_loader=test_loader)
 
         # Вывод результатов
-        # RBN.print_losses()
+        RBN.print_losses()
     else:
         RBN.train_model(model=model, criterion=criterion, optimizer=optimizer, train_loader=train_loader, num_epochs=10)
         RBN.evaluate_model(model=model, criterion=criterion, test_loader=test_loader)
@@ -279,10 +283,10 @@ if __name__ == "__main__":
     # Использование метода для удаления фона из изображения
     # image_path = './VOCdevkit/VOC2012/JPEGImages/2008_001134.jpg'  # Путь к изображению
     # removed_background_image = RBN.remove_background(model=model, image_path=image_path)
-    for i in range(10):
-        image, mask = RBN[i]  # Получаем изображение и маску из вашего датасета
-        result_image = RBN.remove_background(image, mask)
-        result_image.show()  # Показываем результат
+    # for i in range(10):
+    #     image, mask = RBN[i]  # Получаем изображение и маску из вашего датасета
+    #     result_image = RBN.remove_background(image, mask)
+    #     result_image.show()  # Показываем результат
 
     # Вывод изображения с удаленным фоном
     # removed_background_image.show()
